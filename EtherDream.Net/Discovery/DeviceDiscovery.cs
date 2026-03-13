@@ -6,6 +6,7 @@ using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Timers;
 
 namespace LaserCore.Etherdream.Net.Discovery
 {
@@ -23,6 +24,9 @@ namespace LaserCore.Etherdream.Net.Discovery
 
         public event EventHandler DevicesUpdated;
         public static ConcurrentDictionary<string, DacDto> DiscoveredDevices = new ConcurrentDictionary<string, DacDto>();
+        private ConcurrentDictionary<string, DateTime> _discoveryTimestamps = new ConcurrentDictionary<string, DateTime>();
+        private Timer _discoveryTimer = new Timer(2000);
+
         public void ClearEntries()
         {
             DiscoveredDevices.Clear(); 
@@ -38,6 +42,27 @@ namespace LaserCore.Etherdream.Net.Discovery
             _discoveryClient.Client.ReceiveTimeout = 1000;
             _discoveryClient.BeginReceive(ReceiveCallback, udpState);
             DiscoveredDevices = new ConcurrentDictionary<string, DacDto>();
+
+            _discoveryTimer.Elapsed += _discoveryTimer_Elapsed;
+            _discoveryTimer.Enabled = true;
+        }
+
+        //periodically check timestamps of discoverd devices and remove ones that haven't received an update recently
+        private void _discoveryTimer_Elapsed(object sender, ElapsedEventArgs e)
+        {
+            var entriesChanged = false;
+            foreach (var item in _discoveryTimestamps)
+            {
+                if (item.Value < DateTime.Now - TimeSpan.FromSeconds(2))
+                {
+                    DiscoveredDevices.TryRemove(item.Key, out var v);
+                    _discoveryTimestamps.TryRemove(item.Key, out var dt);
+                    entriesChanged = true;
+                }
+            }
+
+            if (entriesChanged)
+                DevicesUpdated?.Invoke(this, EventArgs.Empty);
         }
 
         private DacBroadcastDto Deserialize(byte[] param)
@@ -46,7 +71,6 @@ namespace LaserCore.Etherdream.Net.Discovery
             DacBroadcastDto dto = MemoryMarshal.Cast<byte, DacBroadcastDto>(bytes)[0];
             return dto;
         }
-        
 
         public  DacDto FindFirstDevice()
         {
@@ -63,7 +87,6 @@ namespace LaserCore.Etherdream.Net.Discovery
             DiscoveredDevices.TryAdd(etherDream.Ip, etherDream);
 
             return etherDream;
-
         }
 
         public void ReceiveCallback(IAsyncResult ar)
@@ -82,6 +105,7 @@ namespace LaserCore.Etherdream.Net.Discovery
 
                 if (DiscoveredDevices.TryAdd(etherDream.Ip, etherDream))
                     DevicesUpdated?.Invoke(this, EventArgs.Empty);
+                _discoveryTimestamps.AddOrUpdate(etherDream.Ip, DateTime.Now, (s, nd) => DateTime.Now);
 
                 // Restart only if not disposing
                 client.BeginReceive(ReceiveCallback, udpState); 
@@ -116,6 +140,7 @@ namespace LaserCore.Etherdream.Net.Discovery
             {
                 if (disposing)
                 {
+                    _discoveryTimer.Dispose();
                     _discoveryClient.Dispose();
                 }
 
